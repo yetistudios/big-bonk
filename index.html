@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>BONK!</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
@@ -452,6 +452,16 @@
       e.preventDefault();
       touchX = null;
     }, { passive: false });
+
+    // --- Overlay tap/click (start & retry on mobile) ---
+    overlay.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (state !== 'playing') startGame();
+    }, { passive: false });
+
+    overlay.addEventListener('click', () => {
+      if (state !== 'playing') startGame();
+    });
 
     // --- Update ---
     function update() {
