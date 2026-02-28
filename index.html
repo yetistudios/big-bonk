@@ -19,8 +19,12 @@
       justify-content: center;
       align-items: center;
       height: 100vh;
+      height: 100dvh;
       overflow: hidden;
       font-family: 'Orbitron', monospace, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     #gameContainer {
@@ -115,14 +119,35 @@
     const YELLOW = '#ffff00';
     const BG = '#0a0a0f';
 
+    // --- Touch detection ---
+    const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+    // --- Power-up types ---
+    const POWERUP_TYPES = {
+      wide:    { label: 'W', color: '#00ff88', duration: 15000, weight: 3 },
+      multi:   { label: 'M', color: '#ff8800', duration: 0,     weight: 2 },
+      slow:    { label: 'S', color: '#8888ff', duration: 12000, weight: 2 },
+      magnet:  { label: '~', color: '#ffffff', duration: 15000, weight: 1 },
+      speedup: { label: '!', color: '#ff0044', duration: 10000, weight: 2 },
+      shrink:  { label: 'V', color: '#ff00ff', duration: 10000, weight: 1 },
+    };
+
     // --- Game state ---
     let state = 'start'; // start | playing | gameover
     let score = 0;
     let highScore = parseInt(localStorage.getItem('neonPongHigh') || '0');
 
+    // --- Power-up state ---
+    const pickups = [];
+    const activeEffects = {};
+    let nextPickupTime = 0;
+    const PICKUP_INTERVAL_MIN = 10000;
+    const PICKUP_INTERVAL_MAX = 20000;
+    const DEFAULT_PADDLE_W = 110;
+
     // --- Paddle ---
     const paddle = {
-      w: 110,
+      w: DEFAULT_PADDLE_W,
       h: 14,
       x: W / 2 - 55,
       y: H - 50,
@@ -130,19 +155,13 @@
       dx: 0,
     };
 
-    // --- Ball ---
-    const ball = {
-      x: W / 2,
-      y: H / 2,
-      r: 8,
-      speed: 5,
-      dx: 4,
-      dy: 4,
-    };
-
-    // --- Trail effect ---
-    const trail = [];
+    // --- Balls (array for multi-ball) ---
+    let balls = [];
     const MAX_TRAIL = 12;
+
+    function createBall(x, y, dx, dy) {
+      return { x, y, r: 8, dx, dy, trail: [] };
+    }
 
     // --- Particles ---
     const particles = [];
@@ -164,37 +183,209 @@
     }
 
     // --- Reset ---
-    function resetBall() {
-      ball.x = W / 2;
-      ball.y = H / 2;
-      const angle = (Math.random() * Math.PI / 3) + Math.PI / 6; // 30-90 deg downward
+    function resetBalls() {
+      const angle = (Math.random() * Math.PI / 3) + Math.PI / 6;
       const spd = 5 + score * 0.15;
-      ball.dx = (Math.random() < 0.5 ? 1 : -1) * Math.cos(angle) * spd;
-      ball.dy = Math.sin(angle) * spd;
-      trail.length = 0;
+      const dx = (Math.random() < 0.5 ? 1 : -1) * Math.cos(angle) * spd;
+      const dy = Math.sin(angle) * spd;
+      balls = [createBall(W / 2, H / 2, dx, dy)];
+    }
+
+    function clearPowerUps() {
+      pickups.length = 0;
+      for (const key in activeEffects) delete activeEffects[key];
+      paddle.w = DEFAULT_PADDLE_W;
     }
 
     function startGame() {
       score = 0;
+      clearPowerUps();
       paddle.x = W / 2 - paddle.w / 2;
-      resetBall();
+      resetBalls();
+      nextPickupTime = Date.now() + 5000;
       state = 'playing';
       overlay.classList.remove('active');
     }
 
     function gameOver() {
       state = 'gameover';
+      clearPowerUps();
       if (score > highScore) {
         highScore = score;
         localStorage.setItem('neonPongHigh', highScore);
       }
+      const retryHint = isTouchDevice ? 'TAP TO RETRY' : 'PRESS SPACE TO RETRY';
       overlay.innerHTML = `
         <div class="score-display">SCORE: ${score}</div>
         <h1>${score > highScore - 1 ? 'NEW HIGH' : 'GAME OVER'}</h1>
         <div class="score-display">BEST: ${highScore}</div>
-        <div class="subtitle">PRESS SPACE TO RETRY</div>
+        <div class="subtitle">${retryHint}</div>
       `;
       overlay.classList.add('active');
+    }
+
+    // --- Power-up spawning ---
+    function maybeSpawnPickup() {
+      const now = Date.now();
+      if (now < nextPickupTime || score < 3) return;
+
+      nextPickupTime = now + PICKUP_INTERVAL_MIN +
+        Math.random() * (PICKUP_INTERVAL_MAX - PICKUP_INTERVAL_MIN);
+
+      const types = Object.keys(POWERUP_TYPES);
+      const totalWeight = types.reduce((s, t) => s + POWERUP_TYPES[t].weight, 0);
+      let roll = Math.random() * totalWeight;
+      let chosen = types[0];
+      for (const t of types) {
+        roll -= POWERUP_TYPES[t].weight;
+        if (roll <= 0) { chosen = t; break; }
+      }
+
+      if (activeEffects[chosen]) return;
+
+      pickups.push({
+        x: 40 + Math.random() * (W - 80),
+        y: -20,
+        type: chosen,
+        vy: 1.5 + Math.random(),
+        r: 14,
+        pulse: 0,
+      });
+    }
+
+    // --- Power-up activation ---
+    function activatePowerUp(type) {
+      const def = POWERUP_TYPES[type];
+      const now = Date.now();
+
+      switch (type) {
+        case 'wide':
+          // Cancel shrink if active
+          if (activeEffects.shrink) {
+            paddle.w = activeEffects.shrink.originalW;
+            delete activeEffects.shrink;
+          }
+          if (!activeEffects.wide) {
+            activeEffects.wide = { expiry: now + def.duration, originalW: paddle.w };
+            paddle.w = Math.min(paddle.w * 1.6, W * 0.4);
+          } else {
+            activeEffects.wide.expiry = now + def.duration;
+          }
+          paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
+          break;
+
+        case 'shrink':
+          // Cancel wide if active
+          if (activeEffects.wide) {
+            paddle.w = activeEffects.wide.originalW;
+            delete activeEffects.wide;
+          }
+          if (!activeEffects.shrink) {
+            activeEffects.shrink = { expiry: now + def.duration, originalW: paddle.w };
+            paddle.w = Math.max(paddle.w * 0.55, 40);
+          } else {
+            activeEffects.shrink.expiry = now + def.duration;
+          }
+          paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
+          break;
+
+        case 'slow':
+          // Cancel speedup if active
+          if (activeEffects.speedup) {
+            const f = activeEffects.speedup.factor;
+            balls.forEach(b => { b.dx /= f; b.dy /= f; });
+            delete activeEffects.speedup;
+          }
+          if (!activeEffects.slow) {
+            activeEffects.slow = { expiry: now + def.duration, factor: 0.5 };
+            balls.forEach(b => { b.dx *= 0.5; b.dy *= 0.5; });
+          } else {
+            activeEffects.slow.expiry = now + def.duration;
+          }
+          break;
+
+        case 'speedup':
+          // Cancel slow if active
+          if (activeEffects.slow) {
+            const f = activeEffects.slow.factor;
+            balls.forEach(b => { b.dx /= f; b.dy /= f; });
+            delete activeEffects.slow;
+          }
+          if (!activeEffects.speedup) {
+            activeEffects.speedup = { expiry: now + def.duration, factor: 1.6 };
+            balls.forEach(b => { b.dx *= 1.6; b.dy *= 1.6; });
+          } else {
+            activeEffects.speedup.expiry = now + def.duration;
+          }
+          break;
+
+        case 'magnet':
+          activeEffects.magnet = { expiry: now + def.duration, heldBalls: [] };
+          break;
+
+        case 'multi': {
+          const newBalls = [];
+          balls.forEach(b => {
+            for (let j = 0; j < 2; j++) {
+              const a = (Math.random() - 0.5) * Math.PI / 2;
+              const spd = Math.sqrt(b.dx * b.dx + b.dy * b.dy) || 5;
+              newBalls.push(createBall(
+                b.x, b.y,
+                Math.sin(a) * spd * (j === 0 ? 1 : -1),
+                -Math.abs(Math.cos(a) * spd)
+              ));
+            }
+          });
+          balls.push(...newBalls);
+          break;
+        }
+      }
+    }
+
+    // --- Power-up expiration ---
+    function expireEffects() {
+      const now = Date.now();
+
+      if (activeEffects.wide && now >= activeEffects.wide.expiry) {
+        paddle.w = activeEffects.wide.originalW;
+        paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
+        delete activeEffects.wide;
+      }
+
+      if (activeEffects.shrink && now >= activeEffects.shrink.expiry) {
+        paddle.w = activeEffects.shrink.originalW;
+        paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
+        delete activeEffects.shrink;
+      }
+
+      if (activeEffects.slow && now >= activeEffects.slow.expiry) {
+        const f = activeEffects.slow.factor;
+        balls.forEach(b => { b.dx /= f; b.dy /= f; });
+        delete activeEffects.slow;
+      }
+
+      if (activeEffects.speedup && now >= activeEffects.speedup.expiry) {
+        const f = activeEffects.speedup.factor;
+        balls.forEach(b => { b.dx /= f; b.dy /= f; });
+        delete activeEffects.speedup;
+      }
+
+      if (activeEffects.magnet && now >= activeEffects.magnet.expiry) {
+        releaseMagnetBalls();
+        delete activeEffects.magnet;
+      }
+    }
+
+    // --- Magnet release ---
+    function releaseMagnetBalls() {
+      if (!activeEffects.magnet) return;
+      activeEffects.magnet.heldBalls.forEach(hb => {
+        const speed = Math.sqrt(hb.savedDx ** 2 + hb.savedDy ** 2) || 5;
+        const angle = (Math.random() - 0.5) * Math.PI / 3;
+        hb.ball.dx = Math.sin(angle) * speed;
+        hb.ball.dy = -Math.abs(Math.cos(angle) * speed);
+      });
+      activeEffects.magnet.heldBalls = [];
     }
 
     // --- Input ---
@@ -205,7 +396,11 @@
       keys[e.code] = true;
       if (e.code === 'Space') {
         e.preventDefault();
-        if (state !== 'playing') startGame();
+        if (state === 'playing') {
+          releaseMagnetBalls();
+        } else {
+          startGame();
+        }
       }
     });
 
@@ -223,15 +418,49 @@
     });
 
     canvas.addEventListener('click', () => {
-      if (state !== 'playing') startGame();
+      if (state === 'playing') {
+        releaseMagnetBalls();
+      } else {
+        startGame();
+      }
     });
+
+    // --- Touch input ---
+    let touchX = null;
+
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (state !== 'playing') {
+        startGame();
+        return;
+      }
+      releaseMagnetBalls();
+      const rect = canvas.getBoundingClientRect();
+      touchX = (e.touches[0].clientX - rect.left) * (W / rect.width);
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      touchX = (e.touches[0].clientX - rect.left) * (W / rect.width);
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      touchX = null;
+    }, { passive: false });
 
     // --- Update ---
     function update() {
       if (state !== 'playing') return;
 
+      expireEffects();
+      maybeSpawnPickup();
+
       // Paddle movement
-      if (mouseX !== null) {
+      if (touchX !== null) {
+        paddle.x = touchX - paddle.w / 2;
+      } else if (mouseX !== null) {
         paddle.x = mouseX - paddle.w / 2;
       } else {
         if (keys['ArrowLeft'] || keys['KeyA']) paddle.x -= paddle.speed;
@@ -239,56 +468,114 @@
       }
       paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
 
-      // Ball trail
-      trail.push({ x: ball.x, y: ball.y });
-      if (trail.length > MAX_TRAIL) trail.shift();
-
-      // Ball movement
-      ball.x += ball.dx;
-      ball.y += ball.dy;
-
-      // Wall collisions (sides)
-      if (ball.x - ball.r <= 0) {
-        ball.x = ball.r;
-        ball.dx *= -1;
-        spawnParticles(ball.x, ball.y, MAGENTA, 6);
-      }
-      if (ball.x + ball.r >= W) {
-        ball.x = W - ball.r;
-        ball.dx *= -1;
-        spawnParticles(ball.x, ball.y, MAGENTA, 6);
+      // Update magnet held balls to follow paddle
+      if (activeEffects.magnet) {
+        activeEffects.magnet.heldBalls.forEach(hb => {
+          hb.ball.x = paddle.x + hb.offsetX;
+          hb.ball.x = Math.max(hb.ball.r, Math.min(W - hb.ball.r, hb.ball.x));
+          hb.ball.y = paddle.y - hb.ball.r;
+        });
       }
 
-      // Top wall
-      if (ball.y - ball.r <= 0) {
-        ball.y = ball.r;
-        ball.dy *= -1;
-        spawnParticles(ball.x, ball.y, CYAN, 6);
+      // Update pickups (falling + collection)
+      for (let i = pickups.length - 1; i >= 0; i--) {
+        const pk = pickups[i];
+        pk.y += pk.vy;
+        pk.pulse += 0.05;
+
+        if (pk.y - pk.r > H) {
+          pickups.splice(i, 1);
+          continue;
+        }
+
+        if (
+          pk.y + pk.r >= paddle.y &&
+          pk.y - pk.r <= paddle.y + paddle.h &&
+          pk.x + pk.r >= paddle.x &&
+          pk.x - pk.r <= paddle.x + paddle.w
+        ) {
+          activatePowerUp(pk.type);
+          spawnParticles(pk.x, pk.y, POWERUP_TYPES[pk.type].color, 20);
+          pickups.splice(i, 1);
+        }
       }
 
-      // Paddle collision
-      if (
-        ball.dy > 0 &&
-        ball.y + ball.r >= paddle.y &&
-        ball.y + ball.r <= paddle.y + paddle.h + ball.dy &&
-        ball.x >= paddle.x - ball.r &&
-        ball.x <= paddle.x + paddle.w + ball.r
-      ) {
-        // Where on paddle did it hit? -1 to 1
-        const hit = (ball.x - (paddle.x + paddle.w / 2)) / (paddle.w / 2);
-        const angle = hit * (Math.PI / 3); // max 60 deg deflection
-        const speed = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy) + 0.1;
+      // Update balls
+      for (let bi = balls.length - 1; bi >= 0; bi--) {
+        const b = balls[bi];
 
-        ball.dx = Math.sin(angle) * speed;
-        ball.dy = -Math.cos(angle) * speed;
-        ball.y = paddle.y - ball.r;
+        // Trail
+        b.trail.push({ x: b.x, y: b.y });
+        if (b.trail.length > MAX_TRAIL) b.trail.shift();
 
-        score++;
-        spawnParticles(ball.x, ball.y, YELLOW, 12);
+        // Skip movement for magnet-held balls
+        if (activeEffects.magnet &&
+            activeEffects.magnet.heldBalls.some(hb => hb.ball === b)) {
+          continue;
+        }
+
+        // Movement
+        b.x += b.dx;
+        b.y += b.dy;
+
+        // Wall collisions (sides)
+        if (b.x - b.r <= 0) {
+          b.x = b.r;
+          b.dx *= -1;
+          score++;
+          spawnParticles(b.x, b.y, MAGENTA, 6);
+        }
+        if (b.x + b.r >= W) {
+          b.x = W - b.r;
+          b.dx *= -1;
+          score++;
+          spawnParticles(b.x, b.y, MAGENTA, 6);
+        }
+
+        // Top wall
+        if (b.y - b.r <= 0) {
+          b.y = b.r;
+          b.dy *= -1;
+          score++;
+          spawnParticles(b.x, b.y, CYAN, 6);
+        }
+
+        // Paddle collision
+        if (
+          b.dy > 0 &&
+          b.y + b.r >= paddle.y &&
+          b.y + b.r <= paddle.y + paddle.h + Math.abs(b.dy) &&
+          b.x >= paddle.x - b.r &&
+          b.x <= paddle.x + paddle.w + b.r
+        ) {
+          if (activeEffects.magnet) {
+            const offsetX = b.x - paddle.x;
+            const savedDx = b.dx;
+            const savedDy = b.dy;
+            b.dx = 0;
+            b.dy = 0;
+            b.y = paddle.y - b.r;
+            activeEffects.magnet.heldBalls.push({ ball: b, offsetX, savedDx, savedDy });
+          } else {
+            const hit = (b.x - (paddle.x + paddle.w / 2)) / (paddle.w / 2);
+            const angle = hit * (Math.PI / 3);
+            const speed = Math.sqrt(b.dx * b.dx + b.dy * b.dy) + 0.1;
+            b.dx = Math.sin(angle) * speed;
+            b.dy = -Math.cos(angle) * speed;
+            b.y = paddle.y - b.r;
+          }
+          score++;
+          spawnParticles(b.x, b.y, YELLOW, 12);
+        }
+
+        // Ball out of bounds (bottom)
+        if (b.y - b.r > H) {
+          balls.splice(bi, 1);
+        }
       }
 
-      // Ball out of bounds (bottom)
-      if (ball.y - ball.r > H) {
+      // Game over when all balls lost
+      if (balls.length === 0) {
         gameOver();
       }
 
@@ -311,9 +598,72 @@
       ctx.restore();
     }
 
+    // --- Draw pickups ---
+    function drawPickups() {
+      pickups.forEach(pk => {
+        const def = POWERUP_TYPES[pk.type];
+        const pulseScale = 1 + Math.sin(pk.pulse) * 0.15;
+        const r = pk.r * pulseScale;
+
+        drawGlow(() => {
+          ctx.beginPath();
+          ctx.arc(pk.x, pk.y, r, 0, Math.PI * 2);
+          ctx.strokeStyle = def.color;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = def.color + '33';
+          ctx.fill();
+
+          ctx.font = '700 14px Orbitron, monospace';
+          ctx.fillStyle = def.color;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(def.label, pk.x, pk.y);
+        }, def.color, 12 + Math.sin(pk.pulse) * 4);
+      });
+    }
+
+    // --- Draw active effect timer bars ---
+    function drawActiveEffects() {
+      const now = Date.now();
+      const timedKeys = Object.keys(activeEffects).filter(k =>
+        POWERUP_TYPES[k] && POWERUP_TYPES[k].duration > 0
+      );
+      if (timedKeys.length === 0) return;
+
+      const barW = 60;
+      const barH = 6;
+      const gap = 8;
+      const totalW = timedKeys.length * (barW + gap) - gap;
+      let startX = (W - totalW) / 2;
+      const y = 82;
+
+      timedKeys.forEach(key => {
+        const eff = activeEffects[key];
+        const def = POWERUP_TYPES[key];
+        const remaining = Math.max(0, eff.expiry - now);
+        const fraction = remaining / def.duration;
+
+        ctx.fillStyle = '#ffffff15';
+        ctx.fillRect(startX, y, barW, barH);
+
+        drawGlow(() => {
+          ctx.fillStyle = def.color;
+          ctx.fillRect(startX, y, barW * fraction, barH);
+        }, def.color, 6);
+
+        ctx.font = '400 9px Orbitron, monospace';
+        ctx.fillStyle = def.color;
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 0;
+        ctx.fillText(def.label, startX + barW / 2, y - 5);
+
+        startX += barW + gap;
+      });
+    }
+
     // --- Render ---
     function draw() {
-      // Background with subtle fade (for motion blur)
       ctx.fillStyle = BG;
       ctx.fillRect(0, 0, W, H);
 
@@ -335,24 +685,28 @@
 
       if (state !== 'playing' && state !== 'gameover') return;
 
-      // Ball trail
-      for (let i = 0; i < trail.length; i++) {
-        const t = trail[i];
-        const alpha = (i / trail.length) * 0.5;
-        const size = ball.r * (i / trail.length);
-        ctx.beginPath();
-        ctx.arc(t.x, t.y, size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(0, 255, 255, ${alpha})`;
-        ctx.fill();
-      }
+      // Ball trails
+      balls.forEach(b => {
+        for (let i = 0; i < b.trail.length; i++) {
+          const t = b.trail[i];
+          const alpha = (i / b.trail.length) * 0.5;
+          const size = b.r * (i / b.trail.length);
+          ctx.beginPath();
+          ctx.arc(t.x, t.y, size, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(0, 255, 255, ${alpha})`;
+          ctx.fill();
+        }
+      });
 
-      // Ball
-      drawGlow(() => {
-        ctx.beginPath();
-        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-        ctx.fillStyle = CYAN;
-        ctx.fill();
-      }, CYAN, 20);
+      // Balls
+      balls.forEach(b => {
+        drawGlow(() => {
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+          ctx.fillStyle = CYAN;
+          ctx.fill();
+        }, CYAN, 20);
+      });
 
       // Paddle
       drawGlow(() => {
@@ -365,6 +719,9 @@
         ctx.roundRect(paddle.x, paddle.y, paddle.w, paddle.h, 4);
         ctx.fill();
       }, MAGENTA, 18);
+
+      // Pickups
+      drawPickups();
 
       // Particles
       for (const p of particles) {
@@ -389,6 +746,9 @@
       ctx.shadowBlur = 0;
       ctx.fillText(`BEST: ${highScore}`, W / 2, 68);
       ctx.restore();
+
+      // Active effect timers
+      drawActiveEffects();
     }
 
     // --- Loop ---
@@ -398,7 +758,29 @@
       requestAnimationFrame(loop);
     }
 
+    // --- Responsive scaling ---
+    function resize() {
+      const container = document.getElementById('gameContainer');
+      const maxW = window.innerWidth * 0.95;
+      const maxH = window.innerHeight * 0.95;
+      const scale = Math.min(maxW / W, maxH / H);
+      container.style.width = (W * scale) + 'px';
+      container.style.height = (H * scale) + 'px';
+      canvas.style.width = (W * scale) + 'px';
+      canvas.style.height = (H * scale) + 'px';
+    }
+
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- Touch device UI hint ---
+    if (isTouchDevice) {
+      const sub = overlay.querySelector('.subtitle');
+      if (sub) sub.textContent = 'TAP TO START';
+    }
+
     loop();
   </script>
 </body>
 </html>
+
