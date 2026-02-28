@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NEON PONG</title>
+  <title>BONK!</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
 
@@ -60,14 +60,17 @@
     }
 
     #overlay h1 {
-      font-size: 48px;
+      font-size: 72px;
       font-weight: 900;
-      color: #00ffff;
+      color: #ffe566;
       text-shadow:
-        0 0 10px #00ffff,
-        0 0 30px #00ffff88,
-        0 0 60px #00ffff44;
-      letter-spacing: 12px;
+        0 0 10px #ff6600,
+        0 0 30px #ff660088,
+        0 0 60px #ff440066,
+        0 0 100px #ff220044,
+        0 0 140px #ff000022,
+        3px 3px 0 #cc4400;
+      letter-spacing: 8px;
       margin-bottom: 20px;
     }
 
@@ -97,7 +100,7 @@
   <div id="gameContainer">
     <canvas id="gameCanvas"></canvas>
     <div id="overlay" class="active">
-      <h1>NEON PONG</h1>
+      <h1>BONK!</h1>
       <div class="subtitle">PRESS SPACE TO START</div>
     </div>
   </div>
@@ -783,4 +786,3 @@
   </script>
 </body>
 </html>
-
