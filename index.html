@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>BONK!</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
@@ -25,6 +25,7 @@
       touch-action: none;
       -webkit-user-select: none;
       user-select: none;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
     }
 
     #gameContainer {
@@ -43,6 +44,7 @@
 
     #overlay {
       position: absolute;
+      z-index: 10;
       top: 0;
       left: 0;
       width: 100%;
@@ -59,7 +61,7 @@
 
     #overlay.active {
       pointer-events: all;
-      background: rgba(5, 5, 15, 0.85);
+      background: rgba(5, 5, 15, 0.55);
       opacity: 1;
     }
 
@@ -76,7 +78,7 @@
         3px 3px 0 #cc4400;
       letter-spacing: 8px;
       margin-bottom: 20px;
-      animation: titleFade 4s ease-in-out infinite;
+      animation: titleFade 6s ease-in-out infinite;
     }
 
     #overlay .subtitle {
@@ -110,7 +112,6 @@
   <div id="gameContainer">
     <canvas id="gameCanvas"></canvas>
     <div id="overlay" class="active">
-      <h1>BONK!</h1>
       <div class="subtitle">PRESS SPACE TO START</div>
     </div>
   </div>
@@ -126,13 +127,18 @@
     // --- Canvas size (taller on mobile for fullscreen feel) ---
     const W = 600;
     let H = 750;
+    const BOTTOM_BUFFER = 64;
     if (isTouchDevice) {
-      const screenRatio = window.innerHeight / window.innerWidth;
+      const usableHeight = window.innerHeight - BOTTOM_BUFFER;
+      const screenRatio = usableHeight / window.innerWidth;
       H = Math.round(W * screenRatio);
       H = Math.max(750, Math.min(H, 1200));
     }
     canvas.width = W;
     canvas.height = H;
+
+    // Scale factor for mobile (larger canvas = bigger elements + faster speeds)
+    const hScale = H / 750;
 
     // --- Colors ---
     const CYAN = '#00ffff';
@@ -161,24 +167,24 @@
     let nextPickupTime = 0;
     const PICKUP_INTERVAL_MIN = 10000;
     const PICKUP_INTERVAL_MAX = 20000;
-    const DEFAULT_PADDLE_W = 110;
+    const DEFAULT_PADDLE_W = Math.round(110 * hScale);
 
     // --- Paddle ---
     const paddle = {
       w: DEFAULT_PADDLE_W,
-      h: 14,
-      x: W / 2 - 55,
+      h: Math.round(14 * hScale),
+      x: W / 2 - DEFAULT_PADDLE_W / 2,
       y: H - 50,
-      speed: 7,
+      speed: 7 * hScale,
       dx: 0,
     };
 
     // --- Balls (array for multi-ball) ---
     let balls = [];
-    const MAX_TRAIL = 12;
+    const MAX_TRAIL = Math.round(12 * hScale);
 
     function createBall(x, y, dx, dy) {
-      return { x, y, r: 8, dx, dy, trail: [] };
+      return { x, y, r: Math.round(8 * hScale), dx, dy, trail: [] };
     }
 
     // --- Particles ---
@@ -203,7 +209,7 @@
     // --- Reset ---
     function resetBalls() {
       const angle = (Math.random() * Math.PI / 3) + Math.PI / 6;
-      const spd = 5 + score * 0.15;
+      const spd = (5 + score * 0.15) * hScale;
       const dx = (Math.random() < 0.5 ? 1 : -1) * Math.cos(angle) * spd;
       const dy = Math.sin(angle) * spd;
       balls = [createBall(W / 2, H / 2, dx, dy)];
@@ -240,6 +246,7 @@
         <div class="subtitle">${retryHint}</div>
       `;
       overlay.classList.add('active');
+      overlay.style.background = 'rgba(5, 5, 15, 0.85)';
     }
 
     // --- Power-up spawning ---
@@ -262,14 +269,14 @@
       if (activeEffects[chosen]) return;
 
       const angle = (Math.random() * Math.PI / 3) + Math.PI / 12;
-      const spd = 1.5 + Math.random() * 1.5;
+      const spd = (1.5 + Math.random() * 1.5) * hScale;
       pickups.push({
         x: 40 + Math.random() * (W - 80),
         y: -40,
         type: chosen,
         vx: (Math.random() < 0.5 ? 1 : -1) * Math.cos(angle) * spd,
         vy: Math.sin(angle) * spd,
-        r: 14,
+        r: Math.round(14 * hScale),
         pulse: 0,
         spawnTime: Date.now(),
         trail: [],
@@ -306,7 +313,7 @@
           }
           if (!activeEffects.shrink) {
             activeEffects.shrink = { expiry: now + def.duration, originalW: paddle.w };
-            paddle.w = Math.max(paddle.w * 0.55, 40);
+            paddle.w = Math.max(paddle.w * 0.55, Math.round(40 * hScale));
           } else {
             activeEffects.shrink.expiry = now + def.duration;
           }
@@ -837,12 +844,12 @@
       );
       if (timedKeys.length === 0) return;
 
-      const barW = 60;
-      const barH = 6;
-      const gap = 8;
+      const barW = Math.round(60 * hScale);
+      const barH = Math.round(6 * hScale);
+      const gap = Math.round(8 * hScale);
       const totalW = timedKeys.length * (barW + gap) - gap;
       let startX = (W - totalW) / 2;
-      const y = 82;
+      const y = Math.round(82 * hScale);
 
       timedKeys.forEach(key => {
         const eff = activeEffects[key];
@@ -858,11 +865,11 @@
           ctx.fillRect(startX, y, barW * fraction, barH);
         }, def.color, 6);
 
-        ctx.font = '400 9px Orbitron, monospace';
+        ctx.font = '400 ' + Math.round(9 * hScale) + 'px Orbitron, monospace';
         ctx.fillStyle = def.color;
         ctx.textAlign = 'center';
         ctx.shadowBlur = 0;
-        ctx.fillText(def.label, startX + barW / 2, y - 5);
+        ctx.fillText(def.label, startX + barW / 2, y - Math.round(5 * hScale));
 
         startX += barW + gap;
       });
@@ -887,6 +894,26 @@
         ctx.moveTo(0, y);
         ctx.lineTo(W, y);
         ctx.stroke();
+      }
+
+      // BONK! title (canvas-drawn)
+      if (state !== 'gameover') {
+        const t = Date.now() / 3000;
+        const bonkAlpha = state === 'playing'
+          ? 0.10 + Math.sin(t * Math.PI) * 0.08
+          : 0.65 + Math.sin(t * Math.PI) * 0.35;
+        ctx.save();
+        ctx.globalAlpha = bonkAlpha;
+        ctx.font = '900 ' + Math.round(72 * hScale) + 'px Orbitron, monospace';
+        ctx.fillStyle = '#ffe566';
+        if (state !== 'playing') {
+          ctx.shadowColor = '#ff6600';
+          ctx.shadowBlur = Math.round(30 * hScale);
+        }
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('BONK!', W / 2, H * 0.4);
+        ctx.restore();
       }
 
       if (state !== 'playing' && state !== 'gameover') return;
@@ -939,18 +966,18 @@
 
       // Score HUD
       ctx.save();
-      ctx.font = '700 28px Orbitron, monospace';
+      ctx.font = '700 ' + Math.round(28 * hScale) + 'px Orbitron, monospace';
       ctx.fillStyle = YELLOW;
       ctx.shadowColor = YELLOW;
       ctx.shadowBlur = 12;
       ctx.textAlign = 'center';
-      ctx.fillText(score, W / 2, 45);
+      ctx.fillText(score, W / 2, Math.round(45 * hScale));
 
       // High score
-      ctx.font = '400 12px Orbitron, monospace';
+      ctx.font = '400 ' + Math.round(12 * hScale) + 'px Orbitron, monospace';
       ctx.fillStyle = '#ffffff55';
       ctx.shadowBlur = 0;
-      ctx.fillText(`BEST: ${highScore}`, W / 2, 68);
+      ctx.fillText(`BEST: ${highScore}`, W / 2, Math.round(68 * hScale));
       ctx.restore();
 
       // Active effect timers
@@ -975,6 +1002,10 @@
       container.style.height = (H * scale) + 'px';
       canvas.style.width = (W * scale) + 'px';
       canvas.style.height = (H * scale) + 'px';
+      if (isTouchDevice && H > 750) {
+        document.body.style.alignItems = 'flex-start';
+        document.body.style.paddingTop = '8px';
+      }
     }
 
     window.addEventListener('resize', resize);
@@ -990,3 +1021,4 @@
   </script>
 </body>
 </html>
+
