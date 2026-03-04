@@ -169,6 +169,29 @@
     const PICKUP_INTERVAL_MAX = 20000;
     const DEFAULT_PADDLE_W = Math.round(110 * hScale);
 
+    // --- Obstacle paddles ---
+    const OBS_PADDLE_W = Math.round(100 * hScale);
+    const OBS_PADDLE_H = Math.round(12 * hScale);
+    const OBS_SCORE_THRESHOLD = 50;
+    const OBS_SLIDE_DURATION = 1000;  // ms to slide in/out
+    const OBS_SPEED_BASE = 2.0 * hScale;
+    const OBS_COLOR = '#ff4400';
+
+    function getObsDuration() {
+      // 12s at score 50, scaling to 18s at score 100+
+      return Math.min(18000, 12000 + (score - OBS_SCORE_THRESHOLD) * 120);
+    }
+
+    function getObsRestPeriod() {
+      // 35s at score 50, shrinking to 15s minimum at score 150+
+      return Math.max(15000, 35000 - (score - OBS_SCORE_THRESHOLD) * 200);
+    }
+
+    let obsPaddles = [];
+    let obsState = 'idle'; // idle | sliding_in | active | sliding_out
+    let obsTimer = 0;
+    let obsPhaseStart = 0;
+
     // --- Paddle ---
     const paddle = {
       w: DEFAULT_PADDLE_W,
@@ -183,8 +206,12 @@
     let balls = [];
     const MAX_TRAIL = Math.round(12 * hScale);
 
+    const MIN_SPEED_FACTOR = 0.6;   // below 60% of spawn speed = "too slow"
+    const SLOW_GRACE_MS = 2000;      // allow 2s of slow before correcting
+    const SPEED_RESTORE_RATE = 0.02; // gradual acceleration per frame
+
     function createBall(x, y, dx, dy) {
-      return { x, y, r: Math.round(8 * hScale), dx, dy, trail: [] };
+      return { x, y, r: Math.round(8 * hScale), dx, dy, trail: [], slowSince: 0 };
     }
 
     // --- Particles ---
@@ -224,6 +251,7 @@
     function startGame() {
       score = 0;
       clearPowerUps();
+      resetObstacles();
       paddle.x = W / 2 - paddle.w / 2;
       resetBalls();
       nextPickupTime = Date.now() + 5000;
@@ -234,6 +262,7 @@
     function gameOver() {
       state = 'gameover';
       clearPowerUps();
+      resetObstacles();
       if (score > highScore) {
         highScore = score;
         localStorage.setItem('neonPongHigh', highScore);
@@ -419,6 +448,121 @@
       activeEffects.magnet.heldBalls = [];
     }
 
+    // --- Obstacle paddle lifecycle ---
+    function initObsPaddles() {
+      const playTop = 60 * hScale;
+      const playBot = paddle.y - 30 * hScale;
+      const zone = playBot - playTop;
+      const y1 = playTop + zone * (1 / 3);
+      const y2 = playTop + zone * (2 / 3);
+
+      obsPaddles = [
+        {
+          x: -OBS_PADDLE_W,          // starts offscreen left
+          y: y1,
+          targetX: W * 0.15,         // slides in to 15% from left
+          homeX: -OBS_PADDLE_W,
+          dir: 1,                     // moves right first
+          fromSide: 'left',
+        },
+        {
+          x: W,                       // starts offscreen right
+          y: y2,
+          targetX: W * 0.85 - OBS_PADDLE_W, // slides in to 85% from left
+          homeX: W,
+          dir: -1,                    // moves left first
+          fromSide: 'right',
+        },
+      ];
+    }
+
+    function resetObstacles() {
+      obsPaddles = [];
+      obsState = 'idle';
+      obsTimer = 0;
+      obsPhaseStart = 0;
+    }
+
+    function updateObstacles() {
+      if (score < OBS_SCORE_THRESHOLD) return;
+
+      const now = Date.now();
+
+      switch (obsState) {
+        case 'idle':
+          if (obsTimer === 0) {
+            // First time reaching threshold — short delay then spawn
+            obsTimer = now + 2000;
+          }
+          if (now >= obsTimer) {
+            initObsPaddles();
+            obsState = 'sliding_in';
+            obsPhaseStart = now;
+          }
+          break;
+
+        case 'sliding_in': {
+          const elapsed = now - obsPhaseStart;
+          const t = Math.min(1, elapsed / OBS_SLIDE_DURATION);
+          // Ease-out cubic
+          const ease = 1 - Math.pow(1 - t, 3);
+          obsPaddles.forEach(op => {
+            op.x = op.homeX + (op.targetX - op.homeX) * ease;
+          });
+          if (t >= 1) {
+            obsState = 'active';
+            obsPhaseStart = now;
+          }
+          break;
+        }
+
+        case 'active': {
+          const duration = getObsDuration();
+          const elapsed = now - obsPhaseStart;
+
+          // Horizontal oscillation
+          obsPaddles.forEach(op => {
+            op.x += op.dir * OBS_SPEED_BASE;
+            // Bounce off walls
+            if (op.x <= 0) {
+              op.x = 0;
+              op.dir = 1;
+            }
+            if (op.x + OBS_PADDLE_W >= W) {
+              op.x = W - OBS_PADDLE_W;
+              op.dir = -1;
+            }
+          });
+
+          if (elapsed >= duration) {
+            obsState = 'sliding_out';
+            obsPhaseStart = now;
+            // Record current x as the start of slide-out
+            obsPaddles.forEach(op => {
+              op.slideOutStartX = op.x;
+            });
+          }
+          break;
+        }
+
+        case 'sliding_out': {
+          const elapsed = now - obsPhaseStart;
+          const t = Math.min(1, elapsed / OBS_SLIDE_DURATION);
+          // Ease-in cubic
+          const ease = t * t * t;
+          obsPaddles.forEach(op => {
+            op.x = op.slideOutStartX + (op.homeX - op.slideOutStartX) * ease;
+          });
+          if (t >= 1) {
+            obsState = 'idle';
+            obsTimer = now + getObsRestPeriod();
+            obsPaddles = [];
+          }
+          break;
+        }
+      }
+    }
+
     // --- Input ---
     const keys = {};
     let mouseX = null;
@@ -491,6 +635,7 @@
 
       expireEffects();
       maybeSpawnPickup();
+      updateObstacles();
 
       // Paddle movement
       if (touchX !== null) {
@@ -599,6 +744,22 @@
         b.x += b.dx;
         b.y += b.dy;
 
+        // Minimum speed enforcement
+        const curSpeed = Math.sqrt(b.dx * b.dx + b.dy * b.dy);
+        const baseSpeed = (5 + score * 0.15) * hScale;
+        const minSpeed = baseSpeed * MIN_SPEED_FACTOR;
+        if (curSpeed < minSpeed && !activeEffects.slow) {
+          if (b.slowSince === 0) {
+            b.slowSince = Date.now();
+          } else if (Date.now() - b.slowSince > SLOW_GRACE_MS) {
+            const boost = 1 + SPEED_RESTORE_RATE;
+            b.dx *= boost;
+            b.dy *= boost;
+          }
+        } else {
+          b.slowSince = 0;
+        }
+
         // Wall collisions (sides)
         if (b.x - b.r <= 0) {
           b.x = b.r;
@@ -649,9 +810,74 @@
           spawnParticles(b.x, b.y, YELLOW, 12);
         }
 
+        // Obstacle paddle collision
+        for (const op of obsPaddles) {
+          if (
+            b.x + b.r >= op.x &&
+            b.x - b.r <= op.x + OBS_PADDLE_W &&
+            b.y + b.r >= op.y &&
+            b.y - b.r <= op.y + OBS_PADDLE_H
+          ) {
+            // Determine if ball hit top/bottom or sides
+            const overlapLeft = (b.x + b.r) - op.x;
+            const overlapRight = (op.x + OBS_PADDLE_W) - (b.x - b.r);
+            const overlapTop = (b.y + b.r) - op.y;
+            const overlapBottom = (op.y + OBS_PADDLE_H) - (b.y - b.r);
+            const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+            if (minOverlap === overlapTop || minOverlap === overlapBottom) {
+              b.dy *= -1;
+              if (minOverlap === overlapTop) b.y = op.y - b.r;
+              else b.y = op.y + OBS_PADDLE_H + b.r;
+            } else {
+              b.dx *= -1;
+              if (minOverlap === overlapLeft) b.x = op.x - b.r;
+              else b.x = op.x + OBS_PADDLE_W + b.r;
+            }
+            score++;
+            spawnParticles(b.x, b.y, OBS_COLOR, 8);
+            break;
+          }
+        }
+
         // Ball out of bounds (bottom)
         if (b.y - b.r > H) {
           balls.splice(bi, 1);
+        }
+      }
+
+      // Ball-to-ball collisions (elastic, equal mass)
+      for (let i = 0; i < balls.length; i++) {
+        for (let j = i + 1; j < balls.length; j++) {
+          const a = balls[i], b = balls[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const minDist = a.r + b.r;
+          if (dist > 0 && dist < minDist) {
+            // Normal vector
+            const nx = dx / dist;
+            const ny = dy / dist;
+            // Relative velocity along normal
+            const dvx = a.dx - b.dx;
+            const dvy = a.dy - b.dy;
+            const dvn = dvx * nx + dvy * ny;
+            // Only resolve if balls are approaching
+            if (dvn > 0) {
+              // Equal mass elastic: swap normal components
+              a.dx -= dvn * nx;
+              a.dy -= dvn * ny;
+              b.dx += dvn * nx;
+              b.dy += dvn * ny;
+              // Separate so they don't overlap
+              const overlap = (minDist - dist) / 2;
+              a.x -= overlap * nx;
+              a.y -= overlap * ny;
+              b.x += overlap * nx;
+              b.y += overlap * ny;
+              spawnParticles((a.x + b.x) / 2, (a.y + b.y) / 2, CYAN, 6);
+            }
+          }
         }
       }
 
@@ -691,10 +917,10 @@
           }
           ctx.closePath();
           break;
-        case 'multi': // 6-pointed star
-          for (let i = 0; i < 12; i++) {
-            const a = (Math.PI / 6) * i - Math.PI / 2;
-            const sr = i % 2 === 0 ? r : r * 0.5;
+        case 'multi': // 8-pointed starburst
+          for (let i = 0; i < 16; i++) {
+            const a = (Math.PI / 8) * i - Math.PI / 2;
+            const sr = i % 2 === 0 ? r : r * 0.3;
             const px = x + sr * Math.cos(a), py = y + sr * Math.sin(a);
             i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
           }
@@ -953,6 +1179,36 @@
         ctx.fill();
       }, MAGENTA, 18);
 
+      // Obstacle paddles
+      obsPaddles.forEach(op => {
+        drawGlow(() => {
+          const grad = ctx.createLinearGradient(op.x, 0, op.x + OBS_PADDLE_W, 0);
+          grad.addColorStop(0, OBS_COLOR);
+          grad.addColorStop(0.5, '#ff7744');
+          grad.addColorStop(1, OBS_COLOR);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.roundRect(op.x, op.y, OBS_PADDLE_W, OBS_PADDLE_H, 3);
+          ctx.fill();
+        }, OBS_COLOR, 14);
+
+        // Hazard stripes (subtle diagonal lines)
+        ctx.save();
+        ctx.globalAlpha = 0.25;
+        ctx.beginPath();
+        ctx.roundRect(op.x, op.y, OBS_PADDLE_W, OBS_PADDLE_H, 3);
+        ctx.clip();
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2;
+        for (let sx = -OBS_PADDLE_H; sx < OBS_PADDLE_W + OBS_PADDLE_H; sx += 8) {
+          ctx.beginPath();
+          ctx.moveTo(op.x + sx, op.y + OBS_PADDLE_H);
+          ctx.lineTo(op.x + sx + OBS_PADDLE_H, op.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      });
+
       // Pickups
       drawPickups();
 
@@ -1021,4 +1277,5 @@
   </script>
 </body>
 </html>
+
 
